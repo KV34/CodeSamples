@@ -1,13 +1,12 @@
 /*
- * Sample code for android application https://play.google.com/store/apps/details?id=com.anypackagehost.unproject_rubic
+ * Sample code from android application https://play.google.com/store/apps/details?id=com.anypackagehost.unproject_rubic
 */
 
 #include "TheGUI.h"
-#include "SubWindow.h"
-#include "SettingsControls.h"
+#include "GUI/all_controls.h"
 #include "GameControl.h"
 #include "Records.h"
-#include "DebugGUI.h"
+
 
 class MenuButton:public CustomButton
 {
@@ -23,11 +22,8 @@ public:
         ASSERT(rect().width()==rect().height());
         float r=rect().width()/2;
         const GLColor norm_color=GUIStyle::current().frame_color;
-        const GLColor hot_color=GUIStyle::current().hot_color;
         int shape_n=0;
-        sm.updateHollowCircle(shape_n,rect().center(),r);
-        sm.setupState(Normal,shape_n,norm_color);
-        sm.setupState(Pressed,shape_n++,hot_color);
+        sm.updateHollowCircle(shape_n++,rect().center(),r);
         r-=GUIStyle::current().text_padding;
         float len=r*sqrt(2);
         float offset=(rect().width()-len)/2;
@@ -36,10 +32,10 @@ public:
         {
             pt2d bl=rect().corner(Rect::BottomLeft)+vc2d{offset,offset+i*2*h_step};
             pt2d tr{bl.x+len,bl.y+h_step};
-            sm.updateRectShape(shape_n,ShapeType::SolidRect,Rect::from2Edges(bl,tr));
-            sm.setupState(Normal,shape_n,norm_color);
-            sm.setupState(Pressed,shape_n++,hot_color);
+            sm.updateRectShape(shape_n++,ShapeType::SolidRect,Rect::from2Edges(bl,tr));
         }
+        for(int i=0;i<shape_n;i++)
+            sm.setupStates(i,norm_color);
     }
 };
 
@@ -70,30 +66,31 @@ protected:
 
 
 ///all GUI controls with handlers are here:
-TheGUI::TheGUI():_block_other_views(false)
+TheGUI::TheGUI():_concurency(ViewsConcurency::None)
 {
+    HorizontalLayout* persp_setup_overlay=new HorizontalLayout(desktop(),FTStretch,FTStretch);
     VerticalLayout* overlay=new VerticalLayout(desktop(),FTCenter,FTStretch);
     overlay->_draw_border=false;
     overlay->_outer_border=overlay->_inner_border=0;
+
     MenuButton* menu_btn=new MenuButton(*overlay);
     new TimerLabel(*overlay);
 
-    std::function<void(SubWindow*)> show=[overlay,this](SubWindow* w)
+    std::function<void(SubWindow*)> show=[=](SubWindow* w)
     {
         GameControl::gui_is_ready_for_ad=w!=overlay;
-        if(Dialog* dlg=dynamic_cast<Dialog*>(w))
-        {
-            dlg->open();
+        ASSERT(dynamic_cast<Dialog*>(w)==NULL);
+        if(dynamic_cast<RecordsTable*>(w))
             GameControl::gui_is_ready_for_ad=false;
-        }
+        desktop().setWindow(*w);
+        if(w==persp_setup_overlay)
+            _concurency=ViewsConcurency::ExclusiveMouseHandling;
+        else if(w!=overlay)
+            blockAllOtherViews();
         else
-        {
-            if(dynamic_cast<RecordsTable*>(w))
-                GameControl::gui_is_ready_for_ad=false;
-            desktop().setWindow(*w);
-        }
-        this->_block_other_views=w!=overlay;
+            unblockAllOtherViews();
     };
+    Dialog::setOnStartDialogHandler([](){GameControl::gui_is_ready_for_ad=false;});
 
     VoidFunc startTheGame=[=]()
     {
@@ -119,11 +116,10 @@ TheGUI::TheGUI():_block_other_views(false)
     menu_btn->setClickHandler([=]()
     {   showMainMenu();});
 
-
     //New custom game:
     HeaderLayout* new_game_params=new HeaderLayout("Parameters",desktop(),FTCenter,FTCenter);
-    new IntSpinBox(settings().shuffle_steps,"Shuffle turns:",{1,50},1,*new_game_params);
-    new IntSpinBox(settings().cube_size,"Cube size:",{2,3},1,*new_game_params);
+    newSpinBox(settings().shuffle_steps,"Shuffle turns:",{1,50},1,*new_game_params);
+    newSpinBox(settings().cube_size,"Cube size:",{2,3},1,*new_game_params);
     HorButtonsGroup* btn_group=new HorButtonsGroup(*new_game_params);
     btn_group->addBtn("Back")->setClickHandler([=](){showMainMenu();});
     btn_group->addBtn("Start")->setClickHandler([=](){startTheGame();});
@@ -133,9 +129,24 @@ TheGUI::TheGUI():_block_other_views(false)
     VerticalLayout* options=new VerticalLayout(*opts_header,FTStretch,FTStretch);
     options->_outer_border=options->_inner_border=0;
     options->_draw_border=false;
-    new SpinBox(settings().animation_speed, "Animation speed:",{1,20},1,*options);
+    newSpinBox(settings().animation_speed, "Animation speed:",{1.f,20.f},1.f,*options)->setValueFormatCorrection(
+            [](const Str &value){ return value.substr(0,value.size()-3);});
     new BoolEnumControl(settings().show_shuffle_animation,"Suffle animation:",{"OFF","ON"},*options);
     new BoolEnumControl(settings().show_timer,"Timer:",{"HIDDEN","VISIBLE"},*options);
+    new BoolEnumControl(settings().use_flat_view,"View mode:  ",{"PERSPECTIVE","ISOMERTY(2D)"},*options);
+
+    //Perspective settings
+    HeaderLayout* persp_settings=new HeaderLayout("Perspective options",*persp_setup_overlay,FTCenter,FTCenter);
+    persp_settings->_draw_bg_frame=true;
+    newSpinBox(settings().perspective_distortion,"Perspective distortion:",{0.2f,1.4f},0.05f,*persp_settings,FTStretch,FTTop);
+    newSpinBox(settings().main_cube_alfa, "Right cube opacity:",{0,1},0.05f,*persp_settings,FTStretch,FTTop);
+    newSpinBox(settings().secondary_cube_alfa, "Left cube opacity:",{0,1},0.05f,*persp_settings,FTStretch,FTTop);
+    (new Button("Accept",*persp_settings,FTStretch,FTTop))->setClickHandler([=]()
+    {GameControl::rubic_mode=RubicViewMode::Normal; show(opts_header);});
+
+    //Options -continue:
+    (new Button("Perspective>>",*options,FTStretch,FTTop))->setClickHandler([=]()
+    {GameControl::rubic_mode=RubicViewMode::SetupPerspective; show(persp_setup_overlay);});
     //+new DualEnumBox("Cube place:",{"LEFT","RIGHT"},*options);
     //+show clock
     HorButtonsGroup* opts_btn_group=new HorButtonsGroup(*options);
@@ -168,32 +179,47 @@ TheGUI::TheGUI():_block_other_views(false)
     //After win:
     RecordsTable* rec_tab=new RecordsTable(desktop(),FTCenter,FTCenter);
     rec_tab->_close_btn->setClickHandler([=](){show(overlay);});
-    Dialog* win_dlg=new Dialog("*Congratulations*","You win!",{"OK","RECORDS"});
-    win_dlg->setMinimalSize(TextRect("__Congratulations__",true).size());
-    win_dlg->setBtnHandler([=](ButtonId btn)
-    {
-        if(btn=="RECORDS")
-        {
-            win_dlg->close();
-            rec_tab->reArrange();
-            show(rec_tab);
-        }
-        else
-            this->_block_other_views=false;
-    });
     GameControl::setVictoryHandler([=]()
     {
-        this->_block_other_views=true;
+        blockAllOtherViews();
         info<<"you've lost"<<secToTimeStr(settings().tmp_timer);
-        show(win_dlg);
+        Dialog::execute(" *Congratulations* ","You win!",{"OK","RECORDS"},[=](ButtonId btn)
+        {
+            if(btn=="RECORDS")
+            {
+                rec_tab->reArrange();
+                show(rec_tab);
+            }
+            else
+                unblockAllOtherViews();
+        });
     });
-
-    showMainMenu();
+    if(settings().need_update_notification)//update 2.0
+    {
+        blockAllOtherViews();
+        Dialog::execute("*A new view is available*","Views can be switched in \n Options -> View mode. Switch \nto the new view now?",
+                {"Switch","Don't switch"},[=](ButtonId btn)
+        {
+            settings().use_flat_view=btn!="Switch";
+            showMainMenu();
+        });
+    }
+    else
+        showMainMenu();
 }
+//todo: clock, bgcolor, brightness, motion back while in motion
 
 ViewsConcurency TheGUI::viewConcurency() const
 {
-    if(_block_other_views)
-        return ViewsConcurency::ExclusiveDrawing|ViewsConcurency::ExclusiveMouseHandling;
-    return ViewsConcurency::None;
+    return _concurency;
+}
+
+void TheGUI::blockAllOtherViews()
+{
+    _concurency=ViewsConcurency::ExclusiveDrawing|ViewsConcurency::ExclusiveMouseHandling;
+}
+
+void TheGUI::unblockAllOtherViews()
+{
+    _concurency=ViewsConcurency::None;
 }
